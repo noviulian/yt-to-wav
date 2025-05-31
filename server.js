@@ -1,20 +1,20 @@
-// === server.js with Redis ===
+// === server.js with Redis + YouTube title scraping ===
 const express = require("express");
 const { exec } = require("child_process");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
 const bodyParser = require("body-parser");
-const ytdl = require("ytdl-core");
 const Redis = require("ioredis");
+const fetch = require("node-fetch");
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8080;
 
 const downloadsDir = path.join(__dirname, "downloads");
 if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
 
-const redis = new Redis(process.env.REDIS_URL + "?family=0");
+const redis = new Redis(`${process.env.REDIS_URL}?family=0`);
 const REDIS_HISTORY_KEY = "downloads_history";
 
 app.use(cors());
@@ -23,6 +23,25 @@ app.use(bodyParser.json());
 app.use("/downloads", express.static(downloadsDir));
 app.use(express.static(path.join(__dirname, "public")));
 
+function extractVideoId(url) {
+    const match = url.match("/(?:v=|be\\/|embed\\/|watch\\?v=)([w-]{11})/");
+    return match ? match[1] : null;
+}
+
+async function getTitleFromHtml(videoId) {
+    try {
+        const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
+        const html = await res.text();
+        const match = html.match("/<title>(.*?)<\\/title>/i");
+        if (match) {
+            return match[1].replace(" - YouTube", "").trim();
+        }
+    } catch (e) {
+        console.warn("⚠️ Scrape failed:", e);
+    }
+    return "Unknown Title";
+}
+
 app.post("/download", async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).send("No URL provided");
@@ -30,20 +49,11 @@ app.post("/download", async (req, res) => {
     const timestamp = Date.now();
     const fileName = `audio_${timestamp}.wav`;
     const outputPath = `downloads/${fileName}`;
-    let title = "Unknown Title";
-    let videoId = null;
 
-    try {
-        const info = await ytdl.getInfo(url);
-        title = info.videoDetails?.title || title;
-        videoId = info.videoDetails?.videoId || null;
-    } catch (err) {
-        console.warn("⚠️ Failed to fetch metadata. Using fallback.");
-        const match = url.match(/(?:v=|be\/)([\w-]{11})/);
-        if (match) videoId = match[1];
-    }
+    const videoId = extractVideoId(url);
+    const title = videoId ? await getTitleFromHtml(videoId) : "Unknown Title";
 
-    const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o "${outputPath}" "${url}"`;
+    const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o \"${outputPath}\" \"${url}\"`;
 
     exec(command, async (err) => {
         if (err) {
@@ -59,12 +69,13 @@ app.post("/download", async (req, res) => {
             timestamp,
         };
 
-        await redis.lpush("downloads_history", JSON.stringify(entry));
+        await redis.lpush(REDIS_HISTORY_KEY, JSON.stringify(entry));
         const fileUrl = `/downloads/${fileName}`;
         console.log("✅ Saved:", fileUrl);
         res.json({ downloadUrl: fileUrl });
     });
 });
+
 app.get("/history", async (req, res) => {
     try {
         const entries = await redis.lrange(REDIS_HISTORY_KEY, 0, -1);
