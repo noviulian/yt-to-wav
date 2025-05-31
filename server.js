@@ -27,40 +27,44 @@ app.post("/download", async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).send("No URL provided");
 
+    const timestamp = Date.now();
+    const fileName = `audio_${timestamp}.wav`;
+    const outputPath = `downloads/${fileName}`;
+    let title = "Unknown Title";
+    let videoId = null;
+
     try {
         const info = await ytdl.getInfo(url);
-        const title = info.videoDetails.title;
-        const videoId = info.videoDetails.videoId;
-        const timestamp = Date.now();
-        const fileName = `audio_${timestamp}.wav`;
-        const outputPath = `downloads/${fileName}`;
-
-        const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o \"${outputPath}\" \"${url}\"`;
-
-        exec(command, async (err) => {
-            if (err) {
-                console.error("Download error:", err);
-                return res.status(500).send("Download failed");
-            }
-
-            const entry = {
-                url,
-                fileName,
-                title,
-                videoId,
-                timestamp,
-            };
-            await redis.lpush(REDIS_HISTORY_KEY, JSON.stringify(entry));
-            const fileUrl = `/downloads/${fileName}`;
-            console.log("✅ Saved:", fileUrl);
-            res.json({ downloadUrl: fileUrl });
-        });
+        title = info.videoDetails?.title || title;
+        videoId = info.videoDetails?.videoId || null;
     } catch (err) {
-        console.error("Metadata error:", err);
-        return res.status(500).send("Could not fetch video info");
+        console.warn("⚠️ Failed to fetch metadata. Using fallback.");
+        const match = url.match(/(?:v=|be\/)([\w-]{11})/);
+        if (match) videoId = match[1];
     }
-});
 
+    const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o "${outputPath}" "${url}"`;
+
+    exec(command, async (err) => {
+        if (err) {
+            console.error("Download error:", err);
+            return res.status(500).send("Download failed");
+        }
+
+        const entry = {
+            url,
+            fileName,
+            title,
+            videoId,
+            timestamp,
+        };
+
+        await redis.lpush("downloads_history", JSON.stringify(entry));
+        const fileUrl = `/downloads/${fileName}`;
+        console.log("✅ Saved:", fileUrl);
+        res.json({ downloadUrl: fileUrl });
+    });
+});
 app.get("/history", async (req, res) => {
     try {
         const entries = await redis.lrange(REDIS_HISTORY_KEY, 0, -1);
