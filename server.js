@@ -1,6 +1,3 @@
-// === server.js ===
-// Full-feature YouTube to WAV downloader web app
-
 const express = require("express");
 const { exec } = require("child_process");
 const cors = require("cors");
@@ -29,8 +26,9 @@ app.post("/download", async (req, res) => {
 
     const timestamp = Date.now();
     const fileName = `audio_${timestamp}.wav`;
-    const outputPath = path.join(downloadsDir, fileName);
-    const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o \"${outputPath}\" \"${url}\"`;
+    const outputPath = `downloads/${fileName}`;
+
+    const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o "${outputPath}" "${url}"`;
 
     exec(command, (err) => {
         if (err) {
@@ -39,11 +37,16 @@ app.post("/download", async (req, res) => {
         }
 
         const entry = { url, fileName, timestamp };
-        const existing = JSON.parse(fs.readFileSync(jsonLogFile));
-        existing.push(entry);
-        fs.writeFileSync(jsonLogFile, JSON.stringify(existing, null, 2));
+        try {
+            const existing = JSON.parse(fs.readFileSync(jsonLogFile));
+            existing.push(entry);
+            fs.writeFileSync(jsonLogFile, JSON.stringify(existing, null, 2));
+        } catch (e) {
+            console.warn("Failed to update log:", e);
+        }
 
         const fileUrl = `/downloads/${fileName}`;
+        console.log("✅ Saved:", fileUrl);
         res.json({ downloadUrl: fileUrl });
     });
 });
@@ -51,9 +54,10 @@ app.post("/download", async (req, res) => {
 app.get("/history", (req, res) => {
     try {
         const data = JSON.parse(fs.readFileSync(jsonLogFile));
-        res.json(data.reverse()); // most recent first
+        res.json(data.reverse());
     } catch {
         res.status(500).send("Could not load history");
     }
 });
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
