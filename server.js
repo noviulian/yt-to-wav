@@ -1,4 +1,4 @@
-// === server.js with Redis + YouTube title scraping ===
+// === server.js with Redis + External API metadata ===
 const express = require("express");
 const { exec } = require("child_process");
 const cors = require("cors");
@@ -28,18 +28,21 @@ function extractVideoId(url) {
     return match ? match[1] : null;
 }
 
-async function getTitleFromHtml(videoId) {
+async function fetchMetadata(videoId) {
     try {
-        const res = await fetch(`https://www.youtube.com/watch?v=${videoId}`);
-        const html = await res.text();
-        const match = html.match("/<title>(.*?)<\\/title>/i");
-        if (match) {
-            return match[1].replace(" - YouTube", "").trim();
+        const apiUrl = `https://ytapi.apps.mattw.io/v3/videos?key=foo1&quotaUser=ytwav&part=snippet&id=${videoId}`;
+        const res = await fetch(apiUrl);
+        const data = await res.json();
+        if (data.items && data.items[0]) {
+            return {
+                title: data.items[0].snippet.title,
+                thumbnail: data.items[0].snippet.thumbnails.high.url,
+            };
         }
     } catch (e) {
-        console.warn("⚠️ Scrape failed:", e);
+        console.warn("⚠️ External API failed:", e);
     }
-    return "Unknown Title";
+    return { title: "Unknown Title", thumbnail: null };
 }
 
 app.post("/download", async (req, res) => {
@@ -51,7 +54,9 @@ app.post("/download", async (req, res) => {
     const outputPath = `downloads/${fileName}`;
 
     const videoId = extractVideoId(url);
-    const title = videoId ? await getTitleFromHtml(videoId) : "Unknown Title";
+    const meta = videoId
+        ? await fetchMetadata(videoId)
+        : { title: "Unknown Title", thumbnail: null };
 
     const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o \"${outputPath}\" \"${url}\"`;
 
@@ -64,7 +69,8 @@ app.post("/download", async (req, res) => {
         const entry = {
             url,
             fileName,
-            title,
+            title: meta.title,
+            thumbnail: meta.thumbnail,
             videoId,
             timestamp,
         };
