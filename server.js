@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 3001;
 const downloadsDir = path.join(__dirname, "downloads");
 if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
 
-const redis = new Redis(process.env.REDIS_URL);
+const redis = new Redis(process.env.REDIS_URL + "?family=0");
 const REDIS_HISTORY_KEY = "downloads_history";
 
 app.use(cors());
