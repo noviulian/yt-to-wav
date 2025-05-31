@@ -25,6 +25,7 @@ app.use(express.static(path.join(__dirname, "public")));
 
 function extractVideoId(url) {
     const match = url.match("/(?:v=|be\\/|embed\\/|watch\\?v=)([w-]{11})/");
+    console.log({ id: match ? match[1] : null });
     return match ? match[1] : null;
 }
 
@@ -33,6 +34,7 @@ async function fetchMetadata(videoId) {
         const apiUrl = `https://ytapi.apps.mattw.io/v3/videos?key=foo1&quotaUser=ytwav&part=snippet&id=${videoId}`;
         const response = await axios.get(apiUrl);
         const data = response.data;
+        console.log({ dataFromAPI: data });
         if (data.items && data.items.length > 0) {
             const snippet = data.items[0].snippet;
             return {
