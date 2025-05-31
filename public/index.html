@@ -4,7 +4,7 @@
         <title>YouTube to WAV</title>
         <style>
             body {
-                font-family: sans-serif;
+                font-family: "Segoe UI", sans-serif;
                 background: #121212;
                 color: #eee;
                 text-align: center;
@@ -16,6 +16,8 @@
                 font-size: 1rem;
                 width: 300px;
                 margin: 10px;
+                border-radius: 6px;
+                border: none;
             }
             .loader {
                 display: none;
@@ -47,10 +49,24 @@
                 color: #64ffda;
                 text-decoration: none;
             }
-            .item-buttons button {
-                margin-left: 10px;
-                padding: 6px 10px;
-                font-size: 0.9rem;
+            .item-buttons {
+                display: flex;
+                flex-direction: column;
+                gap: 8px;
+                align-items: flex-end;
+            }
+            .cute-btn {
+                background: transparent;
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 4px 8px;
+                font-size: 0.85rem;
+                color: #eee;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+            .cute-btn:hover {
+                background: #222;
             }
         </style>
     </head>
@@ -126,21 +142,23 @@
                 ${thumb ? `<img src="${thumb}" />` : ""}
                 <div style="flex-grow:1">
                   <strong>${entry.title || "Unknown Title"} ${
-                                isNew ? "🆕" : ""
+                                isNew
+                                    ? "<span style='color:#0af;'>🆕</span>"
+                                    : ""
                             }</strong><br/>
-                  Link: <span style="color:#64ffda">${
+                  <div style="margin: 4px 0; font-size: 0.9rem">🔗 ${
                       entry.fileName
-                  }</span><br/>
+                  }</div>
                   <a href="/downloads/${
                       entry.fileName
                   }" download>⬇ Download WAV</a><br/>
                   <small>${formatTime(entry.timestamp)}</small>
                 </div>
                 <div class="item-buttons">
-                  <button onclick="copyToClipboard('${
+                  <button class="cute-btn" onclick="copyToClipboard('${
                       entry.url
                   }')">📋 Copy</button>
-                  <button onclick="deleteEntry('${
+                  <button class="cute-btn" onclick="deleteEntry('${
                       entry.fileName
                   }')">🗑 Delete</button>
                 </div>
