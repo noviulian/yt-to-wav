@@ -31,6 +31,7 @@
             .item {
                 display: flex;
                 align-items: center;
+                justify-content: space-between;
                 margin-bottom: 20px;
                 background: #1e1e1e;
                 padding: 10px;
@@ -45,6 +46,11 @@
             .item a {
                 color: #64ffda;
                 text-decoration: none;
+            }
+            .item-buttons button {
+                margin-left: 10px;
+                padding: 6px 10px;
+                font-size: 0.9rem;
             }
         </style>
     </head>
@@ -62,11 +68,11 @@
             <button type="submit">Download</button>
         </form>
 
-        <div class="loader" id="loader">Processing...</div>
+        <div class="loader" id="loader">⏳ Processing...</div>
         <div id="result"></div>
 
         <div class="history">
-            <h2>📜 Previous Downloads</h2>
+            <h2>📅 Recently Converted</h2>
             <div id="historyList"></div>
         </div>
 
@@ -76,14 +82,31 @@
             const result = document.getElementById("result");
             const historyList = document.getElementById("historyList");
 
+            const processingSet = new Set();
+
             function getVideoId(url) {
-                const match = url.match(/(?:v=|be\/)([\\w-]{11})/);
+                const match = url.match(
+                    /(?:v=|be\/|embed\/|watch\?v=)([\w-]{11})/
+                );
                 return match ? match[1] : null;
             }
 
             function formatTime(ts) {
                 const d = new Date(ts);
                 return d.toLocaleString();
+            }
+
+            function copyToClipboard(text) {
+                navigator.clipboard.writeText(text);
+            }
+
+            async function deleteEntry(fileName) {
+                await fetch("/delete", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ fileName }),
+                });
+                await loadHistory();
             }
 
             async function loadHistory() {
@@ -97,17 +120,32 @@
                                 (entry.videoId
                                     ? `https://img.youtube.com/vi/${entry.videoId}/0.jpg`
                                     : "");
+                            const isNew = processingSet.has(entry.fileName);
                             return `
-    <div class="item">
-      ${thumb ? `<img src="${thumb}" />` : ""}
-      <div>
-        <strong>${entry.title || "Unknown Title"}</strong><br/>
-        <a href="${entry.url}" target="_blank">Link: ${entry.fileName}</a><br/>
-        <a href="/downloads/${entry.fileName}" download>⬇ Download WAV</a><br/>
-        <small>${formatTime(entry.timestamp)}</small>
-      </div>
-    </div>
-  `;
+              <div class="item">
+                ${thumb ? `<img src="${thumb}" />` : ""}
+                <div style="flex-grow:1">
+                  <strong>${entry.title || "Unknown Title"} ${
+                                isNew ? "🆕" : ""
+                            }</strong><br/>
+                  Link: <span style="color:#64ffda">${
+                      entry.fileName
+                  }</span><br/>
+                  <a href="/downloads/${
+                      entry.fileName
+                  }" download>⬇ Download WAV</a><br/>
+                  <small>${formatTime(entry.timestamp)}</small>
+                </div>
+                <div class="item-buttons">
+                  <button onclick="copyToClipboard('${
+                      entry.url
+                  }')">📋 Copy</button>
+                  <button onclick="deleteEntry('${
+                      entry.fileName
+                  }')">🗑 Delete</button>
+                </div>
+              </div>
+            `;
                         })
                         .join("");
                 } catch {
@@ -121,6 +159,7 @@
                 result.innerHTML = "";
 
                 const url = document.getElementById("urlInput").value;
+                document.getElementById("urlInput").value = "";
 
                 try {
                     const res = await fetch("/download", {
@@ -130,12 +169,13 @@
                     });
 
                     const data = await res.json();
-                    loader.style.display = "none";
+                    processingSet.add(data.downloadUrl.split("/").pop());
                     result.innerHTML = `<a href="${data.downloadUrl}" download>🔗 Click to Download WAV</a>`;
-                    await loadHistory();
                 } catch {
-                    loader.style.display = "none";
                     result.innerHTML = `<span style="color: red;">Download failed</span>`;
+                } finally {
+                    loader.style.display = "none";
+                    await loadHistory();
                 }
             });
 

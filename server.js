@@ -96,4 +96,23 @@ app.get("/history", async (req, res) => {
     }
 });
 
+app.post("/delete", async (req, res) => {
+    const { fileName } = req.body;
+    const filePath = path.join(__dirname, "downloads", fileName);
+    try {
+        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+        const entries = await redis.lrange("downloads_history", 0, -1);
+        const filtered = entries.filter((e) => !e.includes(fileName));
+        await redis.del("downloads_history");
+        if (filtered.length) {
+            await redis.rpush("downloads_history", ...filtered);
+        }
+        res.sendStatus(200);
+    } catch (e) {
+        console.error("Delete error:", e);
+        res.sendStatus(500);
+    }
+});
+
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
