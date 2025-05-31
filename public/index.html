@@ -92,25 +92,22 @@
                     const data = await res.json();
                     historyList.innerHTML = data
                         .map((entry) => {
-                            const id = entry.videoId || getVideoId(entry.url);
-                            const thumb = id
-                                ? `https://img.youtube.com/vi/${id}/0.jpg`
-                                : "";
+                            const thumb =
+                                entry.thumbnail ||
+                                (entry.videoId
+                                    ? `https://img.youtube.com/vi/${entry.videoId}/0.jpg`
+                                    : "");
                             return `
-              <div class="item">
-                ${thumb ? `<img src="${thumb}" />` : ""}
-                <div>
-                  <strong>${entry.title || "Unknown Title"}</strong><br/>
-                  <a href="${entry.url}" target="_blank">${
-                                entry.fileName
-                            }</a><br/>
-                  <a href="/downloads/${
-                      entry.fileName
-                  }" download>⬇ Download WAV</a><br/>
-                  <small>${formatTime(entry.timestamp)}</small>
-                </div>
-              </div>
-            `;
+    <div class="item">
+      ${thumb ? `<img src="${thumb}" />` : ""}
+      <div>
+        <strong>${entry.title || "Unknown Title"}</strong><br/>
+        <a href="${entry.url}" target="_blank">Link: ${entry.fileName}</a><br/>
+        <a href="/downloads/${entry.fileName}" download>⬇ Download WAV</a><br/>
+        <small>${formatTime(entry.timestamp)}</small>
+      </div>
+    </div>
+  `;
                         })
                         .join("");
                 } catch {

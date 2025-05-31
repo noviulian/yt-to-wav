@@ -1,4 +1,4 @@
-// === server.js with Redis + External API metadata ===
+// === server.js with improved external API metadata ===
 const express = require("express");
 const { exec } = require("child_process");
 const cors = require("cors");
@@ -6,7 +6,7 @@ const path = require("path");
 const fs = require("fs");
 const bodyParser = require("body-parser");
 const Redis = require("ioredis");
-const fetch = require("node-fetch");
+const axios = require("axios");
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -31,16 +31,17 @@ function extractVideoId(url) {
 async function fetchMetadata(videoId) {
     try {
         const apiUrl = `https://ytapi.apps.mattw.io/v3/videos?key=foo1&quotaUser=ytwav&part=snippet&id=${videoId}`;
-        const res = await fetch(apiUrl);
-        const data = await res.json();
-        if (data.items && data.items[0]) {
+        const response = await axios.get(apiUrl);
+        const data = response.data;
+        if (data.items && data.items.length > 0) {
+            const snippet = data.items[0].snippet;
             return {
-                title: data.items[0].snippet.title,
-                thumbnail: data.items[0].snippet.thumbnails.high.url,
+                title: snippet.title || "Unknown Title",
+                thumbnail: snippet.thumbnails?.high?.url || null,
             };
         }
     } catch (e) {
-        console.warn("⚠️ External API failed:", e);
+        console.warn("⚠️ API fetch failed:", e.message);
     }
     return { title: "Unknown Title", thumbnail: null };
 }
