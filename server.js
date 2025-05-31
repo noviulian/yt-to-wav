@@ -24,7 +24,7 @@ app.use("/downloads", express.static(downloadsDir));
 app.use(express.static(path.join(__dirname, "public")));
 
 function extractVideoId(url) {
-    const match = url.match("/(?:v=|be\\/|embed\\/|watch\\?v=)([w-]{11})/");
+    const match = url.match(/(?:v=|be\/|embed\/|watch\?v=)([\w-]{11})/);
     console.log({ id: match ? match[1] : null });
     return match ? match[1] : null;
 }
