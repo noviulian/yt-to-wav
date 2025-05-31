@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>YouTube to WAV</title>
+        <style>
+            body {
+                font-family: sans-serif;
+                background: #121212;
+                color: #eee;
+                text-align: center;
+                padding: 40px;
+            }
+            input,
+            button {
+                padding: 10px;
+                font-size: 1rem;
+                width: 300px;
+                margin: 10px;
+            }
+            .loader {
+                display: none;
+                margin-top: 20px;
+            }
+            .history {
+                margin-top: 50px;
+                text-align: left;
+                max-width: 700px;
+                margin-left: auto;
+                margin-right: auto;
+            }
+            .item {
+                display: flex;
+                align-items: center;
+                margin-bottom: 20px;
+                background: #1e1e1e;
+                padding: 10px;
+                border-radius: 8px;
+            }
+            .item img {
+                height: 60px;
+                width: 100px;
+                object-fit: cover;
+                margin-right: 20px;
+            }
+            .item a {
+                color: #64ffda;
+                text-decoration: none;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>🎵 YouTube to WAV Downloader</h1>
+        <form id="downloadForm">
+            <input
+                id="urlInput"
+                type="text"
+                placeholder="Paste YouTube URL..."
+                required
+            />
+            <br />
+            <button type="submit">Download</button>
+        </form>
+        <div class="loader" id="loader">Processing...</div>
+        <div id="result"></div>
+
+        <div class="history">
+            <h2>📜 Previous Downloads</h2>
+            <div id="historyList"></div>
+        </div>
+
+        <script>
+            const form = document.getElementById("downloadForm");
+            const loader = document.getElementById("loader");
+            const result = document.getElementById("result");
+            const historyList = document.getElementById("historyList");
+
+            function getVideoId(url) {
+                const match = url.match("/(?:v=|\\.be\\/)([\\w-]+)/");
+                return match ? match[1] : null;
+            }
+
+            function formatTime(ts) {
+                const d = new Date(ts);
+                return d.toLocaleString();
+            }
+
+            async function loadHistory() {
+                try {
+                    const res = await fetch("/history");
+                    const data = await res.json();
+                    historyList.innerHTML = data
+                        .map((entry) => {
+                            const id = getVideoId(entry.url);
+                            const thumb = id
+                                ? `https://img.youtube.com/vi/${id}/0.jpg`
+                                : "";
+                            return `
+            <div class="item">
+              ${thumb ? `<img src="${thumb}" />` : ""}
+              <div>
+                <a href="${entry.url}" target="_blank">${
+                                entry.fileName
+                            }</a><br/>
+                <a href="/downloads/${
+                    entry.fileName
+                }" download>⬇ Download WAV</a><br/>
+                <small>${formatTime(entry.timestamp)}</small>
+              </div>
+            </div>
+          `;
+                        })
+                        .join("");
+                } catch {
+                    historyList.innerHTML = "<p>Could not load history</p>";
+                }
+            }
+
+            form.addEventListener("submit", async (e) => {
+                e.preventDefault();
+                loader.style.display = "block";
+                result.innerHTML = "";
+
+                const url = document.getElementById("urlInput").value;
+
+                try {
+                    const res = await fetch("/download", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ url }),
+                    });
+
+                    const data = await res.json();
+                    loader.style.display = "none";
+                    result.innerHTML = `<a href="${data.downloadUrl}" download>🔗 Click to Download WAV</a>`;
+                    await loadHistory();
+                } catch {
+                    loader.style.display = "none";
+                    result.innerHTML = `<span style="color: red;">Download failed</span>`;
+                }
+            });
+
+            window.onload = loadHistory;
+        </script>
+    </body>
+</html>
