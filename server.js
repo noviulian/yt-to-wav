@@ -48,42 +48,55 @@ async function fetchMetadata(videoId) {
     return { title: "Unknown Title", thumbnail: null };
 }
 
+function sanitizeFileName(name) {
+    return name.replace(/[\/\\?%*:|"<>]/g, "").trim(); // remove invalid filename characters
+}
+
 app.post("/download", async (req, res) => {
     const { url } = req.body;
     if (!url) return res.status(400).send("No URL provided");
 
-    const timestamp = Date.now();
+    try {
+        const timestamp = Date.now();
 
-    const videoId = extractVideoId(url);
-    const meta = videoId
-        ? await fetchMetadata(videoId)
-        : { title: "Unknown Title", thumbnail: null };
+        const videoId = extractVideoId(url);
+        const meta = videoId
+            ? await fetchMetadata(videoId)
+            : { title: "Unknown Title", thumbnail: null };
 
-    const fileName = `audio_${meta.title}.wav`;
-    const outputPath = `downloads/${fileName}`;
+        const safeTitle = sanitizeFileName(meta.title || "Unknown Title");
+        const fileName = `audio_${safeTitle}.wav`;
+        const outputPath = path.join("downloads", fileName);
 
-    const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o \"${outputPath}\" \"${url}\"`;
+        // Ensure downloads directory exists
+        fs.mkdirSync("downloads", { recursive: true });
 
-    exec(command, async (err) => {
-        if (err) {
-            console.error("Download error:", err);
-            return res.status(500).send("Download failed");
-        }
+        const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o \"${outputPath}\" \"${url}\"`;
 
-        const entry = {
-            url,
-            fileName,
-            title: meta.title,
-            thumbnail: meta.thumbnail,
-            videoId,
-            timestamp,
-        };
+        exec(command, async (err) => {
+            if (err) {
+                console.error("Download error:", err);
+                return res.status(500).send("Download failed");
+            }
 
-        await redis.lpush(REDIS_HISTORY_KEY, JSON.stringify(entry));
-        const fileUrl = `/downloads/${fileName}`;
-        console.log("✅ Saved:", fileUrl);
-        res.json({ downloadUrl: fileUrl });
-    });
+            const entry = {
+                url,
+                fileName,
+                title: meta.title,
+                thumbnail: meta.thumbnail,
+                videoId,
+                timestamp,
+            };
+
+            await redis.lpush(REDIS_HISTORY_KEY, JSON.stringify(entry));
+            const fileUrl = `/downloads/${fileName}`;
+            console.log("✅ Saved:", fileUrl);
+            res.json({ downloadUrl: fileUrl });
+        });
+    } catch (error) {
+        console.error("Unexpected error:", err);
+        res.status(500).send("Internal server error");
+    }
 });
 
 app.get("/history", async (req, res) => {
