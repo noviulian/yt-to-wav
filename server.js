@@ -53,13 +53,14 @@ app.post("/download", async (req, res) => {
     if (!url) return res.status(400).send("No URL provided");
 
     const timestamp = Date.now();
-    const fileName = `audio_${timestamp}.wav`;
-    const outputPath = `downloads/${fileName}`;
 
     const videoId = extractVideoId(url);
     const meta = videoId
         ? await fetchMetadata(videoId)
         : { title: "Unknown Title", thumbnail: null };
+
+    const fileName = `audio_${meta.title}.wav`;
+    const outputPath = `downloads/${fileName}`;
 
     const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o \"${outputPath}\" \"${url}\"`;
 
