@@ -7,6 +7,7 @@ const fs = require("fs");
 const bodyParser = require("body-parser");
 const Redis = require("ioredis");
 const axios = require("axios");
+const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -20,6 +21,7 @@ const REDIS_STATUS_KEY = "download_status";
 const REDIS_CACHE_KEY = "file_cache";
 const FILE_TTL_DAYS = 14;
 const FILE_TTL_MS = FILE_TTL_DAYS * 24 * 60 * 60 * 1000;
+const REDIS_VIEWER_PASSWORD = process.env.REDIS_VIEWER_PASSWORD || "admin123";
 
 app.use(cors());
 app.use(bodyParser.urlencoded({ extended: true }));
@@ -547,6 +549,96 @@ app.get("/cache/stats", async (req, res) => {
         console.error("Cache stats error:", error);
         res.status(500).send("Internal server error");
     }
+});
+
+// Redis viewer authentication middleware
+function requireRedisAuth(req, res, next) {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Basic ')) {
+        res.setHeader('WWW-Authenticate', 'Basic realm="Redis Viewer"');
+        return res.status(401).send('Authentication required');
+    }
+    
+    const credentials = Buffer.from(authHeader.split(' ')[1], 'base64').toString();
+    const [username, password] = credentials.split(':');
+    
+    if (password !== REDIS_VIEWER_PASSWORD) {
+        return res.status(401).send('Invalid credentials');
+    }
+    
+    next();
+}
+
+// RedisInsight access endpoint
+app.get("/redis", requireRedisAuth, (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>RedisInsight Access</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+                .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; text-align: center; }
+                h1 { color: #d73527; }
+                .access-link { display: inline-block; padding: 15px 30px; background: #007bff; color: white; text-decoration: none; border-radius: 5px; margin: 10px; font-size: 16px; }
+                .access-link:hover { background: #0056b3; }
+                .info { background: #e9ecef; padding: 15px; border-radius: 5px; margin: 20px 0; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🔍 Redis Database Access</h1>
+                <p>Access the official RedisInsight tool to view and manage your Redis database.</p>
+                
+                <div class="info">
+                    <strong>Authentication:</strong> Use the same credentials you used to access this page.
+                </div>
+                
+                <a href="/redisinsight" class="access-link" target="_blank">
+                    🚀 Open RedisInsight
+                </a>
+                
+                <div class="info">
+                    <p><strong>Note:</strong> RedisInsight provides advanced features including:</p>
+                    <ul style="text-align: left;">
+                        <li>Real-time database monitoring</li>
+                        <li>Key browser and editor</li>
+                        <li>Query workbench</li>
+                        <li>Memory analysis</li>
+                        <li>Cluster management</li>
+                    </ul>
+                </div>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+// RedisInsight proxy with authentication
+const redisInsightProxy = createProxyMiddleware({
+    target: process.env.REDISINSIGHT_URL || 'http://redisinsight:8001',
+    changeOrigin: true,
+    pathRewrite: {
+        '^/redisinsight': '/'
+    },
+    onError: (err, req, res) => {
+        console.error('RedisInsight proxy error:', err.message);
+        res.status(503).send('RedisInsight service unavailable');
+    }
+});
+
+// Apply auth middleware to RedisInsight proxy
+app.use('/redisinsight', requireRedisAuth, redisInsightProxy);
+
+// Alternative direct access info endpoint
+app.get('/redisinsight-info', requireRedisAuth, (req, res) => {
+    const redisInsightUrl = process.env.REDISINSIGHT_URL || 'http://localhost:8001';
+    res.json({
+        message: 'RedisInsight is available',
+        directUrl: redisInsightUrl,
+        proxyUrl: '/redisinsight',
+        note: 'Use the same credentials as the Redis viewer'
+    });
 });
 
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));

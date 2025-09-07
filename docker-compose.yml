@@ -24,6 +24,7 @@ services:
       - PORT=8080
       - REDIS_URL=redis://redis:6379
       - NODE_ENV=development
+      - REDIS_VIEWER_PASSWORD=${REDIS_VIEWER_PASSWORD:-admin123}
     volumes:
       - ./downloads:/app/downloads
       - ./public:/app/public
@@ -39,6 +40,24 @@ services:
       timeout: 10s
       retries: 3
 
+  # RedisInsight for database management
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    container_name: yt-downloader-redisinsight
+    ports:
+      - "8001:8001"
+    environment:
+      - RIPORT=8001
+      - RIHOST=0.0.0.0
+    volumes:
+      - redisinsight_data:/db
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   redis_data:
+    driver: local
+  redisinsight_data:
     driver: local
