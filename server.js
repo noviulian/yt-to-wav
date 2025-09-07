@@ -267,6 +267,10 @@ app.post("/download", async (req, res) => {
             '--audio-format', format,
             '--newline',
             '--progress',
+            '--rm-cache-dir',  // Clear cache to avoid 403 errors
+            '--socket-timeout', '30',  // Increase timeout
+            '--retries', '3',  // Retry failed downloads
+            '--force-ipv4',  // Force IPv4 to avoid connection issues
             '-o', outputPath,
             url
         ]);
@@ -305,6 +309,46 @@ app.post("/download", async (req, res) => {
         ytdlp.on('close', async (code) => {
             if (code !== 0) {
                 console.error("Download error: yt-dlp exited with code", code);
+                
+                // Try alternative format on 403 error
+                if (code === 1) {
+                    console.log("🔄 Retrying with different format options...");
+                    
+                    const retryYtdlp = spawn('yt-dlp', [
+                        '-f', 'worst[ext=webm]/worst',  // Try worst quality first
+                        '--extract-audio',
+                        '--audio-format', format,
+                        '--newline',
+                        '--progress',
+                        '--rm-cache-dir',
+                        '--socket-timeout', '60',  // Longer timeout for retry
+                        '--retries', '5',
+                        '--force-ipv4',
+                        '--no-check-certificate',  // Skip certificate check
+                        '-o', outputPath,
+                        url
+                    ]);
+                    
+                    retryYtdlp.on('close', async (retryCode) => {
+                        if (retryCode !== 0) {
+                            console.error("Retry also failed with code", retryCode);
+                            await redis.set(`${REDIS_STATUS_KEY}:${downloadId}`, JSON.stringify({
+                                id: downloadId,
+                                status: 'error',
+                                error: 'Download failed after retry. This may be due to geographic restrictions or temporary YouTube blocking.',
+                                timestamp
+                            }), 'EX', 3600);
+                            return;
+                        }
+                        
+                        // Success after retry - continue with normal success flow
+                        console.log("✅ Retry successful");
+                        await handleSuccessfulDownload();
+                    });
+                    
+                    return; // Don't execute the error handling below
+                }
+                
                 await redis.set(`${REDIS_STATUS_KEY}:${downloadId}`, JSON.stringify({
                     id: downloadId,
                     status: 'error',
@@ -313,6 +357,11 @@ app.post("/download", async (req, res) => {
                 }), 'EX', 3600);
                 return;
             }
+
+            await handleSuccessfulDownload();
+        });
+
+        async function handleSuccessfulDownload() {
 
             // Cache the file
             await cacheFileInfo(videoId, format, meta);
@@ -343,7 +392,7 @@ app.post("/download", async (req, res) => {
             }), 'EX', 3600);
             
             console.log("✅ Saved and cached:", fileName);
-        });
+        }
 
         // Respond immediately with download ID
         res.json({ 
