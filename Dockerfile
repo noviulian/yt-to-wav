@@ -1,9 +1,11 @@
 FROM node:18-slim
 
-# Install ffmpeg and yt-dlp dependencies
+# Install ffmpeg, yt-dlp dependencies, and curl for health checks
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    curl && rm -rf /var/lib/apt/lists/*
+    curl \
+    python3 \
+    python3-pip && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp
@@ -21,7 +23,7 @@ RUN npm install
 RUN mkdir -p downloads && touch download_log.json
 
 # Expose port
-EXPOSE 3001
+EXPOSE 8080
 
 # Start server
 CMD ["npm", "start"]

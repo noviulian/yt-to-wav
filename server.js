@@ -1,6 +1,6 @@
-// === server.js with improved external API metadata ===
+// === server.js with progress tracking, unique history, and expiration info ===
 const express = require("express");
-const { exec } = require("child_process");
+const { spawn } = require("child_process");
 const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
@@ -16,11 +16,15 @@ if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
 
 const redis = new Redis(`${process.env.REDIS_URL}?family=0`);
 const REDIS_HISTORY_KEY = "downloads_history";
+const REDIS_STATUS_KEY = "download_status";
+const REDIS_CACHE_KEY = "file_cache";
+const FILE_TTL_DAYS = 14;
+const FILE_TTL_MS = FILE_TTL_DAYS * 24 * 60 * 60 * 1000;
 
 app.use(cors());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
-app.use("/downloads", express.static(downloadsDir));
+// Remove static middleware for downloads - handled by custom route
 app.use(express.static(path.join(__dirname, "public")));
 
 function extractVideoId(url) {
@@ -49,36 +53,271 @@ async function fetchMetadata(videoId) {
 }
 
 function sanitizeFileName(name) {
-    return name.replace(/[\/\\?%*:|"<>]/g, "").trim(); // remove invalid filename characters
+    return name.replace(/[\/\\?%*:|"<>]/g, "").trim();
 }
 
+// Generate unique download ID
+function generateDownloadId() {
+    return Date.now().toString(36) + Math.random().toString(36).substring(2);
+}
+
+// Get cached file info
+async function getCachedFile(videoId, format) {
+    try {
+        const cacheKey = `${REDIS_CACHE_KEY}:${videoId}:${format}`;
+        const cached = await redis.get(cacheKey);
+        if (!cached) return null;
+        
+        const fileInfo = JSON.parse(cached);
+        const fileName = `video_${videoId}.${format}`;
+        const filePath = path.join(downloadsDir, fileName);
+        
+        // Check if file still exists on disk
+        if (!fs.existsSync(filePath)) {
+            // File was deleted, remove from cache
+            await redis.del(cacheKey);
+            return null;
+        }
+        
+        // Update access time (extends TTL)
+        fileInfo.lastAccessed = Date.now();
+        await redis.setex(cacheKey, FILE_TTL_DAYS * 24 * 60 * 60, JSON.stringify(fileInfo));
+        
+        return fileInfo;
+    } catch (error) {
+        console.error("Cache check error:", error);
+        return null;
+    }
+}
+
+// Cache file info
+async function cacheFileInfo(videoId, format, metadata) {
+    try {
+        const cacheKey = `${REDIS_CACHE_KEY}:${videoId}:${format}`;
+        const fileInfo = {
+            videoId,
+            format,
+            title: metadata.title,
+            thumbnail: metadata.thumbnail,
+            fileName: `video_${videoId}.${format}`,
+            cached: Date.now(),
+            lastAccessed: Date.now()
+        };
+        
+        // Cache for 14 days
+        await redis.setex(cacheKey, FILE_TTL_DAYS * 24 * 60 * 60, JSON.stringify(fileInfo));
+        return fileInfo;
+    } catch (error) {
+        console.error("Cache store error:", error);
+    }
+}
+
+// Add to history without duplicates
+async function addToHistory(entry) {
+    try {
+        // Get existing history
+        const entries = await redis.lrange(REDIS_HISTORY_KEY, 0, -1);
+        const existingEntries = entries.map(e => JSON.parse(e));
+        
+        // Check if this video+format combination already exists
+        const isDuplicate = existingEntries.some(existing => 
+            existing.videoId === entry.videoId && existing.format === entry.format
+        );
+        
+        if (!isDuplicate) {
+            // Add new entry only if it doesn't exist
+            await redis.lpush(REDIS_HISTORY_KEY, JSON.stringify(entry));
+            console.log(`➕ Added to history: ${entry.title} (${entry.format})`);
+        } else {
+            console.log(`📋 Skipped duplicate history entry: ${entry.title} (${entry.format})`);
+        }
+    } catch (error) {
+        console.error("History add error:", error);
+    }
+}
+
+// Cleanup expired files
+async function cleanupExpiredFiles() {
+    try {
+        console.log("🧹 Starting cleanup of expired files...");
+        const pattern = `${REDIS_CACHE_KEY}:*`;
+        const keys = await redis.keys(pattern);
+        let deletedCount = 0;
+        
+        for (const key of keys) {
+            const cached = await redis.get(key);
+            if (!cached) continue;
+            
+            const fileInfo = JSON.parse(cached);
+            const fileName = fileInfo.fileName;
+            const filePath = path.join(downloadsDir, fileName);
+            const isExpired = Date.now() - fileInfo.lastAccessed > FILE_TTL_MS;
+            
+            if (isExpired || !fs.existsSync(filePath)) {
+                // Delete file if it exists
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                    console.log(`🗑️ Deleted expired file: ${fileName}`);
+                }
+                
+                // Remove from cache
+                await redis.del(key);
+                
+                // Remove from history if present
+                const historyEntries = await redis.lrange(REDIS_HISTORY_KEY, 0, -1);
+                const filteredHistory = historyEntries.filter(entry => {
+                    const parsed = JSON.parse(entry);
+                    return parsed.fileName !== fileName;
+                });
+                
+                if (filteredHistory.length < historyEntries.length) {
+                    await redis.del(REDIS_HISTORY_KEY);
+                    if (filteredHistory.length > 0) {
+                        await redis.rpush(REDIS_HISTORY_KEY, ...filteredHistory);
+                    }
+                }
+                
+                deletedCount++;
+            }
+        }
+        
+        console.log(`✅ Cleanup complete. Deleted ${deletedCount} expired files.`);
+    } catch (error) {
+        console.error("Cleanup error:", error);
+    }
+}
+
+// Run cleanup every 6 hours
+setInterval(cleanupExpiredFiles, 6 * 60 * 60 * 1000);
+// Run cleanup on startup
+setTimeout(cleanupExpiredFiles, 10000);
+
 app.post("/download", async (req, res) => {
-    const { url } = req.body;
+    const { url, format = "mp3" } = req.body;
     if (!url) return res.status(400).send("No URL provided");
+    
+    // Validate format
+    const validFormats = ["mp3", "wav"];
+    if (!validFormats.includes(format)) {
+        return res.status(400).send("Invalid format. Supported formats: mp3, wav");
+    }
 
     try {
         const timestamp = Date.now();
-
         const videoId = extractVideoId(url);
-        const meta = videoId
-            ? await fetchMetadata(videoId)
-            : { title: "Unknown Title", thumbnail: null };
+        
+        if (!videoId) {
+            return res.status(400).send("Invalid YouTube URL");
+        }
 
-        const safeTitle = sanitizeFileName(meta.title || "Unknown Title");
-        const fileName = `audio_${safeTitle}.wav`;
+        // Check cache first
+        const cachedFile = await getCachedFile(videoId, format);
+        if (cachedFile) {
+            console.log(`📋 Cache hit for ${videoId}.${format}`);
+            
+            // Add to history (won't duplicate)
+            const entry = {
+                url,
+                fileName: cachedFile.fileName,
+                title: cachedFile.title,
+                thumbnail: cachedFile.thumbnail,
+                videoId,
+                timestamp,
+                format,
+            };
+            await addToHistory(entry);
+            
+            // Return cached file immediately
+            return res.json({
+                downloadId: generateDownloadId(),
+                status: 'completed',
+                cached: true,
+                downloadUrl: `/downloads/${cachedFile.fileName}?title=${encodeURIComponent(cachedFile.title)}&format=${format}`,
+                title: cachedFile.title,
+                message: 'File served from cache'
+            });
+        }
+
+        // Not in cache, process normally
+        const downloadId = generateDownloadId();
+        const meta = await fetchMetadata(videoId);
+        const fileName = `video_${videoId}.${format}`;
         const outputPath = path.join("downloads", fileName);
+
+        // Store initial status
+        await redis.set(`${REDIS_STATUS_KEY}:${downloadId}`, JSON.stringify({
+            id: downloadId,
+            status: 'processing',
+            title: meta.title,
+            thumbnail: meta.thumbnail,
+            fileName,
+            format,
+            videoId,
+            progress: 0,
+            timestamp
+        }), 'EX', 3600);
 
         // Ensure downloads directory exists
         fs.mkdirSync("downloads", { recursive: true });
 
-        const command = `yt-dlp -f bestaudio --extract-audio --audio-format wav -o \"${outputPath}\" \"${url}\"`;
+        // Use spawn instead of exec for real-time progress
+        const ytdlp = spawn('yt-dlp', [
+            '-f', 'bestaudio',
+            '--extract-audio',
+            '--audio-format', format,
+            '--newline',
+            '--progress',
+            '-o', outputPath,
+            url
+        ]);
 
-        exec(command, async (err) => {
-            if (err) {
-                console.error("Download error:", err);
-                return res.status(500).send("Download failed");
+        let currentProgress = 0;
+
+        ytdlp.stdout.on('data', async (data) => {
+            const output = data.toString();
+            console.log('yt-dlp output:', output);
+            
+            // Parse progress from yt-dlp output
+            const progressMatch = output.match(/\[download\]\s+(\d+\.?\d*)%/);
+            if (progressMatch) {
+                currentProgress = parseFloat(progressMatch[1]);
+                console.log(`📊 Progress: ${currentProgress}%`);
+                
+                // Update status with progress
+                await redis.set(`${REDIS_STATUS_KEY}:${downloadId}`, JSON.stringify({
+                    id: downloadId,
+                    status: 'processing',
+                    title: meta.title,
+                    thumbnail: meta.thumbnail,
+                    fileName,
+                    format,
+                    videoId,
+                    progress: currentProgress,
+                    timestamp
+                }), 'EX', 3600);
+            }
+        });
+
+        ytdlp.stderr.on('data', (data) => {
+            console.log('yt-dlp stderr:', data.toString());
+        });
+
+        ytdlp.on('close', async (code) => {
+            if (code !== 0) {
+                console.error("Download error: yt-dlp exited with code", code);
+                await redis.set(`${REDIS_STATUS_KEY}:${downloadId}`, JSON.stringify({
+                    id: downloadId,
+                    status: 'error',
+                    error: 'Download failed',
+                    timestamp
+                }), 'EX', 3600);
+                return;
             }
 
+            // Cache the file
+            await cacheFileInfo(videoId, format, meta);
+
+            // Mark as completed and add to history
             const entry = {
                 url,
                 fileName,
@@ -86,15 +325,74 @@ app.post("/download", async (req, res) => {
                 thumbnail: meta.thumbnail,
                 videoId,
                 timestamp,
+                format,
             };
 
-            await redis.lpush(REDIS_HISTORY_KEY, JSON.stringify(entry));
-            const fileUrl = `/downloads/${fileName}`;
-            console.log("✅ Saved:", fileUrl);
-            res.json({ downloadUrl: fileUrl });
+            await addToHistory(entry);
+            await redis.set(`${REDIS_STATUS_KEY}:${downloadId}`, JSON.stringify({
+                id: downloadId,
+                status: 'completed',
+                downloadUrl: `/downloads/${fileName}?title=${encodeURIComponent(meta.title)}&format=${format}`,
+                fileName,
+                title: meta.title,
+                thumbnail: meta.thumbnail,
+                format,
+                videoId,
+                progress: 100,
+                timestamp
+            }), 'EX', 3600);
+            
+            console.log("✅ Saved and cached:", fileName);
         });
+
+        // Respond immediately with download ID
+        res.json({ 
+            downloadId, 
+            status: 'processing',
+            message: 'Download started',
+            title: meta.title
+        });
+        
     } catch (error) {
-        console.error("Unexpected error:", err);
+        console.error("Unexpected error:", error);
+        res.status(500).send("Internal server error");
+    }
+});
+
+// Enhanced download endpoint with proper filename
+app.get("/downloads/:filename", (req, res) => {
+    const { filename } = req.params;
+    const { title, format } = req.query;
+    const filePath = path.join(downloadsDir, filename);
+    
+    if (!fs.existsSync(filePath)) {
+        return res.status(404).send("File not found");
+    }
+    
+    // Set proper filename for download
+    if (title && format) {
+        const safeTitle = sanitizeFileName(title);
+        const downloadName = `${safeTitle}.${format}`;
+        res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
+    }
+    
+    res.sendFile(filePath);
+});
+
+// New endpoint to check download status
+app.get("/download/status/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const statusData = await redis.get(`${REDIS_STATUS_KEY}:${id}`);
+        
+        if (!statusData) {
+            return res.status(404).json({ error: 'Download not found' });
+        }
+        
+        const status = JSON.parse(statusData);
+        res.json(status);
+    } catch (error) {
+        console.error("Status check error:", error);
         res.status(500).send("Internal server error");
     }
 });
@@ -103,7 +401,31 @@ app.get("/history", async (req, res) => {
     try {
         const entries = await redis.lrange(REDIS_HISTORY_KEY, 0, -1);
         const data = entries.map((e) => JSON.parse(e));
-        res.json(data);
+        
+        // Add proper download URLs with titles and expiration info
+        const enhancedData = await Promise.all(data.map(async entry => {
+            // Get cache info for expiration time
+            const cacheKey = `${REDIS_CACHE_KEY}:${entry.videoId}:${entry.format}`;
+            const cached = await redis.get(cacheKey);
+            let expiresAt = null;
+            let expiresIn = null;
+            
+            if (cached) {
+                const fileInfo = JSON.parse(cached);
+                expiresAt = fileInfo.lastAccessed + FILE_TTL_MS;
+                expiresIn = Math.max(0, Math.ceil((expiresAt - Date.now()) / (1000 * 60 * 60 * 24))); // days
+            }
+            
+            return {
+                ...entry,
+                downloadUrl: `/downloads/${entry.fileName}?title=${encodeURIComponent(entry.title)}&format=${entry.format}`,
+                copyUrl: `${req.protocol}://${req.get('host')}/downloads/${entry.fileName}?title=${encodeURIComponent(entry.title)}&format=${entry.format}`,
+                expiresAt,
+                expiresInDays: expiresIn
+            };
+        }));
+        
+        res.json(enhancedData);
     } catch (err) {
         console.error("History error:", err);
         res.status(500).send("Could not load history");
@@ -114,18 +436,67 @@ app.post("/delete", async (req, res) => {
     const { fileName } = req.body;
     const filePath = path.join(__dirname, "downloads", fileName);
     try {
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-
-        const entries = await redis.lrange("downloads_history", 0, -1);
-        const filtered = entries.filter((e) => !e.includes(fileName));
-        await redis.del("downloads_history");
-        if (filtered.length) {
-            await redis.rpush("downloads_history", ...filtered);
+        // Delete file
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
         }
+
+        // Remove from history
+        const entries = await redis.lrange(REDIS_HISTORY_KEY, 0, -1);
+        const filtered = entries.filter((e) => !e.includes(fileName));
+        await redis.del(REDIS_HISTORY_KEY);
+        if (filtered.length) {
+            await redis.rpush(REDIS_HISTORY_KEY, ...filtered);
+        }
+        
+        // Remove from cache if it exists
+        const videoId = fileName.replace(/^video_/, '').replace(/\.(mp3|wav)$/, '');
+        const format = fileName.split('.').pop();
+        const cacheKey = `${REDIS_CACHE_KEY}:${videoId}:${format}`;
+        await redis.del(cacheKey);
+        
         res.sendStatus(200);
     } catch (e) {
         console.error("Delete error:", e);
         res.sendStatus(500);
+    }
+});
+
+// Cache stats endpoint for debugging
+app.get("/cache/stats", async (req, res) => {
+    try {
+        const pattern = `${REDIS_CACHE_KEY}:*`;
+        const keys = await redis.keys(pattern);
+        const stats = {
+            totalCached: keys.length,
+            files: []
+        };
+        
+        for (const key of keys) {
+            const cached = await redis.get(key);
+            if (cached) {
+                const fileInfo = JSON.parse(cached);
+                const fileName = fileInfo.fileName;
+                const filePath = path.join(downloadsDir, fileName);
+                const exists = fs.existsSync(filePath);
+                const age = Math.round((Date.now() - fileInfo.lastAccessed) / (1000 * 60 * 60 * 24));
+                
+                stats.files.push({
+                    videoId: fileInfo.videoId,
+                    format: fileInfo.format,
+                    title: fileInfo.title,
+                    fileName,
+                    exists,
+                    ageInDays: age,
+                    expiresInDays: FILE_TTL_DAYS - age
+                });
+            }
+        }
+        
+        res.json(stats);
+    } catch (error) {
+        console.error("Cache stats error:", error);
+        res.status(500).send("Internal server error");
     }
 });
 
