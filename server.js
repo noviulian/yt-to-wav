@@ -583,6 +583,8 @@ app.get("/redis", requireRedisAuth, (req, res) => {
                 .access-link { display: inline-block; padding: 15px 30px; background: #007bff; color: white; text-decoration: none; border-radius: 5px; margin: 10px; font-size: 16px; }
                 .access-link:hover { background: #0056b3; }
                 .info { background: #e9ecef; padding: 15px; border-radius: 5px; margin: 20px 0; }
+                .warning { background: #fff3cd; border: 1px solid #ffeaa7; color: #856404; padding: 15px; border-radius: 5px; margin: 20px 0; }
+                iframe { width: 100%; height: 600px; border: 1px solid #ddd; border-radius: 5px; }
             </style>
         </head>
         <body>
@@ -590,16 +592,29 @@ app.get("/redis", requireRedisAuth, (req, res) => {
                 <h1>🔍 Redis Database Access</h1>
                 <p>Access the official RedisInsight tool to view and manage your Redis database.</p>
                 
-                <div class="info">
-                    <strong>Authentication:</strong> Use the same credentials you used to access this page.
+                <div class="warning">
+                    <strong>⚠️ Proxy Limitation:</strong> RedisInsight works best when accessed directly due to its complex asset loading and WebSocket connections.
                 </div>
                 
-                <a href="/redisinsight" class="access-link" target="_blank">
-                    🚀 Open RedisInsight
+                <a href="http://localhost:5540" class="access-link" target="_blank">
+                    🚀 Open RedisInsight (Direct Access)
                 </a>
                 
                 <div class="info">
-                    <p><strong>Note:</strong> RedisInsight provides advanced features including:</p>
+                    <p><strong>Setup Instructions:</strong></p>
+                    <ol style="text-align: left;">
+                        <li>Click the link above to open RedisInsight</li>
+                        <li>Add a new Redis database with:</li>
+                        <ul>
+                            <li><strong>Host:</strong> localhost</li>
+                            <li><strong>Port:</strong> 6379</li>
+                            <li><strong>Name:</strong> YouTube Downloader DB</li>
+                        </ul>
+                    </ol>
+                </div>
+                
+                <div class="info">
+                    <p><strong>RedisInsight Features:</strong></p>
                     <ul style="text-align: left;">
                         <li>Real-time database monitoring</li>
                         <li>Key browser and editor</li>
@@ -616,14 +631,33 @@ app.get("/redis", requireRedisAuth, (req, res) => {
 
 // RedisInsight proxy with authentication
 const redisInsightProxy = createProxyMiddleware({
-    target: process.env.REDISINSIGHT_URL || 'http://redisinsight:8001',
+    target: process.env.REDISINSIGHT_URL || 'http://localhost:5540',
     changeOrigin: true,
+    ws: true,  // Enable websocket proxying
     pathRewrite: {
         '^/redisinsight': '/'
     },
+    onProxyReq: (proxyReq, req, res) => {
+        // Handle proxy path for RedisInsight
+        proxyReq.setHeader('x-forwarded-prefix', '/redisinsight');
+    },
     onError: (err, req, res) => {
         console.error('RedisInsight proxy error:', err.message);
-        res.status(503).send('RedisInsight service unavailable');
+        res.status(503).send(`
+            <html>
+            <body style="font-family: Arial; padding: 20px;">
+                <h2>RedisInsight Unavailable</h2>
+                <p>Cannot connect to RedisInsight service.</p>
+                <p><strong>If running locally:</strong></p>
+                <ol>
+                    <li>Start RedisInsight with: <code>docker-compose up redisinsight -d</code></li>
+                    <li>Or access directly at: <a href="http://localhost:5540" target="_blank">http://localhost:5540</a></li>
+                </ol>
+                <p><strong>Error:</strong> ${err.message}</p>
+                <p><strong>Alternative:</strong> Access RedisInsight directly at the link above (no authentication required)</p>
+            </body>
+            </html>
+        `);
     }
 });
 
@@ -632,12 +666,16 @@ app.use('/redisinsight', requireRedisAuth, redisInsightProxy);
 
 // Alternative direct access info endpoint
 app.get('/redisinsight-info', requireRedisAuth, (req, res) => {
-    const redisInsightUrl = process.env.REDISINSIGHT_URL || 'http://localhost:8001';
+    const redisInsightUrl = process.env.REDISINSIGHT_URL || 'http://localhost:5540';
     res.json({
-        message: 'RedisInsight is available',
+        message: 'RedisInsight access information',
         directUrl: redisInsightUrl,
         proxyUrl: '/redisinsight',
-        note: 'Use the same credentials as the Redis viewer'
+        note: 'Use the same credentials as the Redis viewer',
+        instructions: {
+            local: 'Run `docker-compose up redisinsight -d` to start RedisInsight',
+            docker: 'Set REDISINSIGHT_URL=http://redisinsight:5540 when running in Docker'
+        }
     });
 });
 

@@ -42,15 +42,12 @@ services:
 
   # RedisInsight for database management
   redisinsight:
-    image: redislabs/redisinsight:latest
+    image: redis/redisinsight:latest
     container_name: yt-downloader-redisinsight
     ports:
-      - "8001:8001"
-    environment:
-      - RIPORT=8001
-      - RIHOST=0.0.0.0
+      - "5540:5540"
     volumes:
-      - redisinsight_data:/db
+      - redisinsight_data:/data
     depends_on:
       redis:
         condition: service_healthy
