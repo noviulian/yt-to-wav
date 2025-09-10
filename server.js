@@ -309,8 +309,8 @@ app.post("/download", async (req, res) => {
         // Ensure downloads directory exists
         fs.mkdirSync("downloads", { recursive: true });
 
-        // Use spawn instead of exec for real-time progress
-        const ytdlp = spawn('yt-dlp', [
+        // Function to get yt-dlp args with cookie fallbacks
+        const getYtdlpArgs = (browser = 'chrome') => [
             '-f', 'bestaudio',
             '--extract-audio',
             '--audio-format', format,
@@ -320,9 +320,16 @@ app.post("/download", async (req, res) => {
             '--socket-timeout', '30',  // Increase timeout
             '--retries', '3',  // Retry failed downloads
             '--force-ipv4',  // Force IPv4 to avoid connection issues
+            '--cookies-from-browser', browser,  // Try different browsers
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             '-o', outputPath,
             url
-        ]);
+        ];
+
+        // Use spawn instead of exec for real-time progress
+        const ytdlpArgs = getYtdlpArgs('chrome');
+
+        const ytdlp = spawn('yt-dlp', ytdlpArgs);
 
         let currentProgress = 0;
 
@@ -359,39 +366,87 @@ app.post("/download", async (req, res) => {
             if (code !== 0) {
                 console.error("Download error: yt-dlp exited with code", code);
                 
-                // Try alternative format on 403 error
+                // Try alternative browsers and formats on error
                 if (code === 1) {
-                    console.log("🔄 Retrying with different format options...");
+                    console.log("🔄 Retrying with different browser cookies and format options...");
                     
-                    const retryYtdlp = spawn('yt-dlp', [
-                        '-f', 'worst[ext=webm]/worst',  // Try worst quality first
+                    // Try different browsers in order of preference
+                    const browserFallbacks = ['firefox', 'safari', 'edge'];
+                    let retryAttempt = 0;
+                    
+                    const attemptRetry = async (browser) => {
+                        const retryYtdlpArgs = [
+                            '-f', 'worst[ext=webm]/worst',  // Try worst quality first
+                            '--extract-audio',
+                            '--audio-format', format,
+                            '--newline',
+                            '--progress',
+                            '--rm-cache-dir',
+                            '--socket-timeout', '60',
+                            '--retries', '5',
+                            '--force-ipv4',
+                            '--no-check-certificate',
+                            '--cookies-from-browser', browser,
+                            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            '-o', outputPath,
+                            url
+                        ];
+                        
+                        return new Promise((resolve) => {
+                            const retryYtdlp = spawn('yt-dlp', retryYtdlpArgs);
+                            
+                            retryYtdlp.on('close', (retryCode) => {
+                                resolve(retryCode);
+                            });
+                        });
+                    };
+                    
+                    // Try browsers sequentially
+                    for (const browser of browserFallbacks) {
+                        console.log(`🔄 Trying ${browser} cookies...`);
+                        const retryCode = await attemptRetry(browser);
+                        
+                        if (retryCode === 0) {
+                            console.log(`✅ Success with ${browser} cookies`);
+                            await handleSuccessfulDownload();
+                            return;
+                        }
+                    }
+                    
+                    // If all browser attempts fail, try without cookies
+                    console.log("🔄 Trying without cookies as final fallback...");
+                    const finalRetryArgs = [
+                        '-f', 'worst[ext=webm]/worst',
                         '--extract-audio',
                         '--audio-format', format,
                         '--newline',
                         '--progress',
                         '--rm-cache-dir',
-                        '--socket-timeout', '60',  // Longer timeout for retry
+                        '--socket-timeout', '60',
                         '--retries', '5',
                         '--force-ipv4',
-                        '--no-check-certificate',  // Skip certificate check
+                        '--no-check-certificate',
+                        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                         '-o', outputPath,
                         url
-                    ]);
+                    ];
                     
-                    retryYtdlp.on('close', async (retryCode) => {
+                    const finalRetry = spawn('yt-dlp', finalRetryArgs);
+                    
+                    finalRetry.on('close', async (retryCode) => {
                         if (retryCode !== 0) {
-                            console.error("Retry also failed with code", retryCode);
+                            console.error("All retry attempts failed with code", retryCode);
                             await redis.set(`${REDIS_STATUS_KEY}:${downloadId}`, JSON.stringify({
                                 id: downloadId,
                                 status: 'error',
-                                error: 'Download failed after retry. This may be due to geographic restrictions or temporary YouTube blocking.',
+                                error: 'Download failed after all retry attempts. This may be due to geographic restrictions, YouTube blocking, or missing browser cookies.',
                                 timestamp
                             }), 'EX', 3600);
                             return;
                         }
                         
-                        // Success after retry - continue with normal success flow
-                        console.log("✅ Retry successful");
+                        // Success after final retry
+                        console.log("✅ Final retry successful without cookies");
                         await handleSuccessfulDownload();
                     });
                     
