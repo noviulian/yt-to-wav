@@ -1,19 +1,4 @@
 services:
-  # Redis service for caching and history
-  redis:
-    image: redis:7-alpine
-    container_name: yt-downloader-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    command: redis-server --appendonly yes
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
-
   # Main application
   app:
     build: .
@@ -22,7 +7,9 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=${REDIS_URL}
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+      - REDIS_PUBLIC_URL=${REDIS_PUBLIC_URL}
       - NODE_ENV=development
       - REDIS_VIEWER_PASSWORD=${REDIS_VIEWER_PASSWORD:-admin123}
     volumes:
@@ -30,9 +17,6 @@ services:
       - ./public:/app/public
       - ./server.js:/app/server.js
       - ./package.json:/app/package.json
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/"]
@@ -48,13 +32,8 @@ services:
       - "5540:5540"
     volumes:
       - redisinsight_data:/data
-    depends_on:
-      redis:
-        condition: service_healthy
     restart: unless-stopped
 
 volumes:
-  redis_data:
-    driver: local
   redisinsight_data:
     driver: local

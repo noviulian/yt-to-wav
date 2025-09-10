@@ -15,7 +15,54 @@ const PORT = process.env.PORT || 8080;
 const downloadsDir = path.join(__dirname, "downloads");
 if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
 
-const redis = new Redis(`${process.env.REDIS_URL}?family=0`);
+// Configure Redis connection for Railway deployment
+const redisConfig = {
+    // Try REDIS_URL first (Railway provides this with full connection string)
+    ...(process.env.REDIS_URL && { 
+        connectString: process.env.REDIS_URL,
+        family: 0 // Use IPv4
+    }),
+    // Fallback to individual components if REDIS_URL doesn't work
+    ...(!process.env.REDIS_URL && process.env.REDIS_PUBLIC_URL && {
+        connectString: process.env.REDIS_PUBLIC_URL,
+        family: 0
+    }),
+    // Additional Railway-specific configuration
+    ...(process.env.REDIS_PASSWORD && {
+        password: process.env.REDIS_PASSWORD
+    }),
+    // Connection stability settings for Railway
+    retryDelayOnFailover: 100,
+    enableReadyCheck: false,
+    maxRetriesPerRequest: null,
+    lazyConnect: true,
+    keepAlive: 30000
+};
+
+const redis = process.env.REDIS_URL 
+    ? new Redis(process.env.REDIS_URL, { family: 0 })
+    : new Redis(redisConfig);
+
+// Add Redis connection event handlers for debugging
+redis.on('connect', () => {
+    console.log('✅ Connected to Redis');
+});
+
+redis.on('ready', () => {
+    console.log('🚀 Redis is ready for commands');
+});
+
+redis.on('error', (err) => {
+    console.error('❌ Redis connection error:', err.message);
+});
+
+redis.on('close', () => {
+    console.log('🔌 Redis connection closed');
+});
+
+redis.on('reconnecting', () => {
+    console.log('🔄 Reconnecting to Redis...');
+});
 const REDIS_HISTORY_KEY = "downloads_history";
 const REDIS_STATUS_KEY = "download_status";
 const REDIS_CACHE_KEY = "file_cache";
